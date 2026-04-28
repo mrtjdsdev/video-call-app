@@ -120,6 +120,9 @@
       port: peerPort(),
       path: '/peerjs',
       secure: location.protocol === 'https:',
+      config: {
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      },
     };
   }
 
@@ -342,6 +345,7 @@
     }
 
     localVideo.srcObject = localStream;
+    console.log('[call] local stream ready');
     try {
       await localVideo.play();
     } catch (playErr) {
@@ -414,9 +418,26 @@
         scheduleLobbyReset('Call disconnected. Tap Join to retry.', true);
       }
     };
+    const onSignaling = () => {
+      const ld = pc.localDescription;
+      if (ld && ld.type === 'offer') {
+        console.log('[call] offer created');
+      } else if (ld && ld.type === 'answer') {
+        console.log('[call] answer created');
+      }
+    };
+    const onIceCandidate = (ev) => {
+      if (ev && ev.candidate) {
+        console.log('[call] ICE candidate generated');
+      }
+    };
     pc.addEventListener('connectionstatechange', onState);
+    pc.addEventListener('signalingstatechange', onSignaling);
+    pc.addEventListener('icecandidate', onIceCandidate);
     call.once('close', () => {
       pc.removeEventListener('connectionstatechange', onState);
+      pc.removeEventListener('signalingstatechange', onSignaling);
+      pc.removeEventListener('icecandidate', onIceCandidate);
     });
   }
 
@@ -438,7 +459,20 @@
     if (Island) Island.attachMediaConnection(call);
     bindPeerConnectionRecovery(call);
 
+    const pc = call && call.peerConnection;
+    if (pc) {
+      pc.ontrack = (event) => {
+        const remoteStream = event && event.streams && event.streams[0];
+        if (!remoteStream) return;
+        console.log('[call] remote stream received');
+        clearStreamWatchdog();
+        remoteVideo.srcObject = remoteStream;
+        tryPlayRemote();
+      };
+    }
+
     call.on('stream', (remoteStream) => {
+      console.log('[call] remote stream received');
       clearStreamWatchdog();
       remoteVideo.srcObject = remoteStream;
       tryPlayRemote();
@@ -478,6 +512,11 @@
     if (Island) Island.setConnecting('Connecting…');
     wireMediaConnection(call);
     armStreamWatchdog();
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        console.log('[call] track added', track.kind);
+      });
+    }
     call.answer(localStream);
     setCallMessage('Connecting…');
   }
@@ -597,6 +636,11 @@
 
     try {
       if (Island) Island.setRinging();
+      if (localStream) {
+        localStream.getTracks().forEach((track) => {
+          console.log('[call] track added', track.kind);
+        });
+      }
       const call = peer.call(id, localStream);
       wireMediaConnection(call);
       armStreamWatchdog();
