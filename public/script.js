@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const joinPanel = document.getElementById('joinPanel');
   const callPanel = document.getElementById('callPanel');
   const roomInput = document.getElementById('roomInput');
@@ -24,8 +24,20 @@
   let pendingMediaNotice = '';
   let pendingRoomId = null;
   let inServerRoom = false;
+  let isOfferInitiator = false;
+  let hasStartedOffer = false;
   let streamWatchdogTimer = null;
   let lobbyResetScheduled = false;
+  /** @type {RTCIceCandidateInit[]} */
+  let queuedRemoteCandidates = [];
+  /** @type {RTCIceCandidateInit[]} */
+  let pendingCandidatesBeforePc = [];
+
+  function logStep(step, extra) {
+    const sid = socket && socket.id ? socket.id : 'no-socket-id';
+    const suffix = extra ? ` | ${extra}` : '';
+    console.log(`[timeline][${sid}] ${step}${suffix}`);
+  }
 
   function setupPipDrag() {
     if (!pipGlass) return;
@@ -181,6 +193,10 @@
       /* ignore */
     }
     peerConnection = null;
+    isOfferInitiator = false;
+    hasStartedOffer = false;
+    queuedRemoteCandidates = [];
+    pendingCandidatesBeforePc = [];
   }
 
   function hangupMedia() {
@@ -338,6 +354,7 @@
     });
     peerConnection = pc;
     console.log('peer created');
+    logStep('peer created', `initiator=${isOfferInitiator}`);
 
     localStream.getTracks().forEach((track) => {
       pc.addTrack(track, localStream);
@@ -345,12 +362,15 @@
     });
 
     pc.ontrack = (event) => {
+      console.log('ONTRACK FIRED', event.streams);
       const stream = event.streams && event.streams[0];
       if (!stream) return;
       console.log('track received');
       console.log('remote stream received');
       clearStreamWatchdog();
+      console.log('remoteVideo exists?', !!remoteVideo);
       remoteVideo.srcObject = stream;
+      console.log('remoteVideo srcObject assigned', !!remoteVideo.srcObject);
       tryPlayRemote();
       setCallMessage('In call');
       if (Island) {
@@ -363,34 +383,63 @@
     pc.onicecandidate = (event) => {
       if (!event.candidate || !inServerRoom) return;
       console.log('ice sent');
+      logStep('ice sent');
       socket.emit('ice-candidate', { candidate: event.candidate });
     };
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
+      console.log('[webrtc] connectionState', s);
       if (s === 'failed' || s === 'closed') {
         console.warn('[call] RTCPeerConnection', s);
         scheduleLobbyReset('Call disconnected. Tap Join to retry.', true);
       }
     };
+    pc.oniceconnectionstatechange = () => {
+      console.log('[webrtc] iceConnectionState', pc.iceConnectionState);
+    };
 
     if (Island) Island.attachMediaConnection({ peerConnection: pc });
+    if (pendingCandidatesBeforePc.length > 0) {
+      queuedRemoteCandidates.push(...pendingCandidatesBeforePc);
+      pendingCandidatesBeforePc = [];
+    }
     return pc;
   }
 
+  async function flushQueuedRemoteCandidates() {
+    if (!peerConnection || !peerConnection.remoteDescription) return;
+    if (queuedRemoteCandidates.length === 0) return;
+    const pending = queuedRemoteCandidates;
+    queuedRemoteCandidates = [];
+    for (const candidate of pending) {
+      try {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('ice received');
+      } catch (e) {
+        console.warn('[call] queued addIceCandidate failed', e && e.message);
+      }
+    }
+  }
+
   async function startCallerFlow() {
-    if (!hasLiveLocalStream() || !inServerRoom) return;
+    if (!isOfferInitiator || !hasLiveLocalStream() || !inServerRoom || hasStartedOffer) return;
     try {
+      hasStartedOffer = true;
+      logStep('create offer start', `initiator=${isOfferInitiator}`);
       if (Island) Island.setRinging();
       const pc = createPeerConnection();
       const offer = await pc.createOffer();
       console.log('offer created');
+      logStep('offer created');
       await pc.setLocalDescription(offer);
       socket.emit('offer', { offer: pc.localDescription });
       console.log('offer sent');
+      logStep('offer sent');
       setCallMessage('Ringing…');
       armStreamWatchdog();
     } catch (e) {
+      hasStartedOffer = false;
       console.warn('[call] startCallerFlow failed', e && e.message);
       scheduleLobbyReset('Could not start call. Tap Join to retry.', true);
     }
@@ -402,15 +451,19 @@
       const offer = payload && payload.offer;
       if (!offer) return;
       console.log('offer received');
+      logStep('offer received', `initiator=${isOfferInitiator}`);
       if (Island) Island.setConnecting('Connecting…');
 
       const pc = createPeerConnection();
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       console.log('answer created');
+      logStep('answer created');
       await pc.setLocalDescription(answer);
       socket.emit('answer', { answer: pc.localDescription });
       console.log('answer sent');
+      logStep('answer sent');
+      await flushQueuedRemoteCandidates();
       setCallMessage('Connecting…');
       armStreamWatchdog();
     } catch (e) {
@@ -425,6 +478,8 @@
       if (!answer || !peerConnection) return;
       await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       console.log('answer received');
+      logStep('answer received');
+      await flushQueuedRemoteCandidates();
     } catch (e) {
       console.warn('[call] onAnswer failed', e && e.message);
       scheduleLobbyReset('Call setup failed. Tap Join to retry.', true);
@@ -434,9 +489,20 @@
   async function onIceCandidate(payload) {
     try {
       const candidate = payload && payload.candidate;
-      if (!candidate || !peerConnection) return;
+      if (!candidate) return;
+      if (!peerConnection) {
+        pendingCandidatesBeforePc.push(candidate);
+        logStep('ice received before pc (queued)', `count=${pendingCandidatesBeforePc.length}`);
+        return;
+      }
+      if (!peerConnection.remoteDescription) {
+        queuedRemoteCandidates.push(candidate);
+        logStep('ice received before remoteDescription (queued)', `count=${queuedRemoteCandidates.length}`);
+        return;
+      }
       await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
       console.log('ice received');
+      logStep('ice received');
     } catch (e) {
       console.warn('[call] addIceCandidate failed', e && e.message);
     }
@@ -450,6 +516,12 @@
 
   socket.on('waiting', () => {
     inServerRoom = true;
+    isOfferInitiator = false;
+    hasStartedOffer = false;
+    queuedRemoteCandidates = [];
+    pendingCandidatesBeforePc = [];
+    console.log('socket joined');
+    logStep('socket joined', 'waiting');
     setJoinMessage('');
     enterCallView();
     joinBtn.disabled = false;
@@ -461,6 +533,11 @@
 
   socket.on('peer-present', async () => {
     inServerRoom = true;
+    isOfferInitiator = true;
+    console.log('socket joined');
+    console.log('peer exists');
+    logStep('socket joined', 'peer-present');
+    logStep('peer exists', `initiator=${isOfferInitiator}`);
     enterCallView();
     joinBtn.disabled = false;
     if (Island) Island.setConnecting('Connecting…');
@@ -470,9 +547,14 @@
     await startCallerFlow();
   });
 
-  socket.on('peer-joined', () => {
+  socket.on('peer-joined', async () => {
+    isOfferInitiator = false;
+    console.log('peer exists');
+    logStep('peer exists', `initiator=${isOfferInitiator}`);
     if (Island) Island.setPeerJoined();
     setCallMessage('Someone joined — connecting…');
+    // Non-initiator path still runs through same gate; if already started this is a no-op.
+    await startCallerFlow();
   });
 
   socket.on('offer', onOffer);
