@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Video call</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/admin-panel.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <h1 class="header__title">Video</h1>
+        <p class="header__hint">Two devices, same room name. Signaling runs on this server.</p>
+      </header>
+
+      <section class="join-panel" id="joinPanel">
+        <label class="join-panel__label" for="roomInput">Room name</label>
+        <div class="join-panel__row">
+          <input
+            id="roomInput"
+            class="join-panel__input"
+            type="text"
+            placeholder="e.g. weekend"
+            autocomplete="off"
+          />
+          <button type="button" id="joinBtn" class="join-panel__submit">Join</button>
+        </div>
+        <p class="join-panel__status status" id="joinStatus"></p>
+      </section>
+
+      <section class="call-panel hidden" id="callPanel" aria-label="Active call">
+        <div class="call-stage">
+          <div
+            id="dynamicIsland"
+            class="di di--idle di--hidden"
+            data-state="idle"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <div class="di__shell">
+              <div class="di__chip">
+                <span class="di__conn-dot" aria-hidden="true" hidden></span>
+                <span class="di__lead"></span>
+                <span class="di__dots" aria-hidden="true" hidden>
+                  <span class="di__dot">.</span>
+                  <span class="di__dot">.</span>
+                  <span class="di__dot">.</span>
+                </span>
+                <time class="di__timer" datetime="" hidden></time>
+                <span class="di__mic" hidden aria-hidden="true">
+                  <svg class="di__mic-icon di__mic-icon--on" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M12 14a3 3 0 003-3V5a3 3 0 10-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2zm-5 3v4m-3 0h6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <svg class="di__mic-icon di__mic-icon--off" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M4 4l16 16M16 11V5a4 4 0 00-7-2.5M9 9v2a3 3 0 003 3m0 0v4m-3 0h6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="remote-stack">
+            <video
+              id="remoteVideo"
+              class="video-fill remote-stack__video"
+              playsinline
+              webkit-playsinline
+              autoplay
+            ></video>
+            <div class="remote-stack__scrim" aria-hidden="true"></div>
+          </div>
+
+          <div class="pip-glass" aria-hidden="true">
+            <div class="pip-glass__frame">
+              <video id="localVideo" class="video-fill pip-glass__video" playsinline autoplay muted></video>
+            </div>
+          </div>
+
+          <p class="sr-only" id="callStatus" role="status"></p>
+
+          <nav class="control-dock" aria-label="Call controls">
+            <button
+              type="button"
+              id="muteBtn"
+              class="dock-btn dock-btn--mute"
+              aria-pressed="false"
+              aria-label="Mute microphone"
+              title="Mute"
+            >
+              <svg class="dock-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  class="icon-mic-on"
+                  d="M12 14a3 3 0 003-3V5a3 3 0 10-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2zm-5 3v4m-3 0h6"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  class="icon-mic-off"
+                  d="M4 4l16 16M16 11V5a4 4 0 00-7-2.5M9 9v2a3 3 0 003 3m0 0v4m-3 0h6"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              id="leaveBtn"
+              class="dock-btn dock-btn--hangup"
+              aria-label="End call"
+              title="End call"
+            >
+              <svg class="dock-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="6.5" y="10.25" width="11" height="3.5" rx="1.75" fill="currentColor" />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              id="cameraBtn"
+              class="dock-btn dock-btn--cam"
+              aria-pressed="false"
+              aria-label="Turn camera off"
+              title="Camera off"
+            >
+              <svg class="dock-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  class="icon-cam-on"
+                  d="M4 8a2 2 0 012-2h8l2.5 2H20a2 2 0 012 2v6a2 2 0 01-2 2h-1.5L14 18H6a2 2 0 01-2-2V8z"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linejoin="round"
+                />
+                <path
+                  class="icon-cam-off"
+                  d="M4 4l16 16M4 8a2 2 0 012-2h6M22 8v8a2 2 0 01-2 2h-2M14 14v2a2 2 0 01-2 2H6a2 2 0 01-2-2V8"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </nav>
+        </div>
+      </section>
+    </div>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/island-ui.js"></script>
+    <script src="/effects.js"></script>
+    <script src="/soundboard.js"></script>
+    <script src="/script.js"></script>
+    <script src="/admin-sync.js"></script>
+    <script src="/admin-panel.js" defer></script>
+  </body>
+</html>
