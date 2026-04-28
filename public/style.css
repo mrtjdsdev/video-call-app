@@ -882,6 +882,26 @@ body.on-call .join-panel {
   object-fit: cover;
 }
 
+.app-version {
+  position: fixed;
+  right: max(0.6rem, env(safe-area-inset-right));
+  bottom: max(0.55rem, env(safe-area-inset-bottom));
+  z-index: 300;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(48, 63, 73, 0.46);
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(170, 202, 214, 0.25);
+  border-radius: 9999px;
+  padding: 0.18rem 0.45rem;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .call-stage {
     animation: none;

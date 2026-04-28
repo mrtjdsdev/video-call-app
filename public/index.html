@@ -170,13 +170,36 @@
       </section>
     </div>
 
+    <div id="appVersionBadge" class="app-version" aria-live="polite"></div>
+
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/island-ui.js"></script>
-    <script src="/effects.js"></script>
-    <script src="/soundboard.js"></script>
-    <script src="/script.js"></script>
-    <script src="/admin-sync.js"></script>
-    <script src="/admin-panel.js" defer></script>
+    <script src="/version.js"></script>
+    <script>
+      (function loadVersionedAppScripts() {
+        var version = window.APP_VERSION || '1.0.0';
+        var buildTs = window.APP_BUILD_TIMESTAMP || '';
+        var versionText = 'v' + version + (buildTs ? ' • ' + buildTs : '');
+        var badge = document.getElementById('appVersionBadge');
+        if (badge) badge.textContent = versionText;
+
+        var localScripts = [
+          '/island-ui.js',
+          '/effects.js',
+          '/soundboard.js',
+          '/script.js',
+          '/admin-sync.js',
+          '/admin-panel.js',
+        ];
+
+        var query = '?v=' + encodeURIComponent(version);
+        localScripts.forEach(function (src) {
+          var s = document.createElement('script');
+          s.src = src + query;
+          s.async = false; // preserve execution order
+          document.body.appendChild(s);
+        });
+      })();
+    </script>
   </body>
 </html>
