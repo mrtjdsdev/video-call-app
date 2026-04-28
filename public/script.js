@@ -345,7 +345,7 @@
     }
 
     localVideo.srcObject = localStream;
-    console.log('[call] local stream ready');
+    console.log('[call] local stream started');
     try {
       await localVideo.play();
     } catch (playErr) {
@@ -420,24 +420,34 @@
     };
     const onSignaling = () => {
       const ld = pc.localDescription;
-      if (ld && ld.type === 'offer') {
-        console.log('[call] offer created');
-      } else if (ld && ld.type === 'answer') {
-        console.log('[call] answer created');
-      }
+      const rd = pc.remoteDescription;
+      if (ld && ld.type === 'offer') console.log('[call] offer sent');
+      if (rd && rd.type === 'offer') console.log('[call] offer received');
+      if (ld && ld.type === 'answer') console.log('[call] answer sent');
+      if (rd && rd.type === 'answer') console.log('[call] answer received');
     };
     const onIceCandidate = (ev) => {
       if (ev && ev.candidate) {
         console.log('[call] ICE candidate generated');
       }
     };
+    const onTrack = (event) => {
+      const remoteStream = event && event.streams && event.streams[0];
+      if (!remoteStream) return;
+      console.log('[call] remote stream received');
+      clearStreamWatchdog();
+      remoteVideo.srcObject = remoteStream;
+      tryPlayRemote();
+    };
     pc.addEventListener('connectionstatechange', onState);
     pc.addEventListener('signalingstatechange', onSignaling);
     pc.addEventListener('icecandidate', onIceCandidate);
+    pc.addEventListener('track', onTrack);
     call.once('close', () => {
       pc.removeEventListener('connectionstatechange', onState);
       pc.removeEventListener('signalingstatechange', onSignaling);
       pc.removeEventListener('icecandidate', onIceCandidate);
+      pc.removeEventListener('track', onTrack);
     });
   }
 
@@ -458,18 +468,6 @@
 
     if (Island) Island.attachMediaConnection(call);
     bindPeerConnectionRecovery(call);
-
-    const pc = call && call.peerConnection;
-    if (pc) {
-      pc.ontrack = (event) => {
-        const remoteStream = event && event.streams && event.streams[0];
-        if (!remoteStream) return;
-        console.log('[call] remote stream received');
-        clearStreamWatchdog();
-        remoteVideo.srcObject = remoteStream;
-        tryPlayRemote();
-      };
-    }
 
     call.on('stream', (remoteStream) => {
       console.log('[call] remote stream received');
@@ -501,7 +499,7 @@
   }
 
   function onIncomingCall(call) {
-    if (!localStream) {
+    if (!hasLiveLocalStream()) {
       try {
         call.close();
       } catch (e) {
@@ -512,11 +510,13 @@
     if (Island) Island.setConnecting('Connecting…');
     wireMediaConnection(call);
     armStreamWatchdog();
+    console.log('[call] offer received');
     if (localStream) {
       localStream.getTracks().forEach((track) => {
-        console.log('[call] track added', track.kind);
+        console.log('[call] track added to peer connection', track.kind);
       });
     }
+    console.log('[call] answer sent');
     call.answer(localStream);
     setCallMessage('Connecting…');
   }
@@ -629,7 +629,7 @@
 
   socket.on('you-call', ({ partnerPeerId }) => {
     const id = partnerPeerId && String(partnerPeerId);
-    if (!id || !peer || !localStream) {
+    if (!id || !peer || !hasLiveLocalStream()) {
       console.warn('[call] you-call ignored — missing peer, stream, or partner id');
       return;
     }
@@ -638,9 +638,10 @@
       if (Island) Island.setRinging();
       if (localStream) {
         localStream.getTracks().forEach((track) => {
-          console.log('[call] track added', track.kind);
+          console.log('[call] track added to peer connection', track.kind);
         });
       }
+      console.log('[call] offer sent');
       const call = peer.call(id, localStream);
       wireMediaConnection(call);
       armStreamWatchdog();
