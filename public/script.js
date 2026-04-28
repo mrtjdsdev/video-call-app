@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const joinPanel = document.getElementById('joinPanel');
   const callPanel = document.getElementById('callPanel');
   const roomInput = document.getElementById('roomInput');
@@ -13,29 +13,20 @@
   const leaveBtn = document.getElementById('leaveBtn');
 
   const Island = window.IslandUI;
-
-  if (Island && typeof Island.init === 'function') {
-    Island.init();
-  }
+  if (Island && typeof Island.init === 'function') Island.init();
   setupPipDrag();
 
   const socket = io();
 
   let localStream = null;
-  let peer = null;
-  let activeCall = null;
-  let didRegisterPeerjs = false;
+  let peerConnection = null;
   let mediaAcquirePromise = null;
   let pendingMediaNotice = '';
-
-  /** Room id for the current join attempt; cleared when we leave the server room or reset. */
   let pendingRoomId = null;
-  /** True after server accepted us into a room until we `leave-room` or full cleanup. */
   let inServerRoom = false;
   let streamWatchdogTimer = null;
   let lobbyResetScheduled = false;
 
-  /** Optional mobile UX: drag the local PiP to a better spot. */
   function setupPipDrag() {
     if (!pipGlass) return;
     let dragging = false;
@@ -46,7 +37,6 @@
     let baseY = 0;
     let moveX = 0;
     let moveY = 0;
-    let moved = false;
 
     function applyTransform() {
       pipGlass.style.transform = `translate(${moveX}px, ${moveY}px)`;
@@ -70,7 +60,6 @@
       startY = ev.clientY;
       baseX = moveX;
       baseY = moveY;
-      moved = false;
       pipGlass.style.transition = 'none';
       pipGlass.setPointerCapture(pointerId);
     });
@@ -79,7 +68,6 @@
       if (!dragging || ev.pointerId !== pointerId) return;
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
-      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) moved = true;
       const clamped = clampMove(baseX + dx, baseY + dy);
       moveX = clamped.x;
       moveY = clamped.y;
@@ -95,7 +83,7 @@
         /* ignore */
       }
       pointerId = null;
-      pipGlass.style.transition = moved ? 'transform 0.18s ease-out' : '';
+      pipGlass.style.transition = 'transform 0.18s ease-out';
     }
 
     pipGlass.addEventListener('pointerup', endDrag);
@@ -107,23 +95,6 @@
       moveY = clamped.y;
       applyTransform();
     });
-  }
-
-  function peerPort() {
-    if (location.port) return Number(location.port);
-    return location.protocol === 'https:' ? 443 : 80;
-  }
-
-  function peerOptions() {
-    return {
-      host: location.hostname,
-      port: peerPort(),
-      path: '/peerjs',
-      secure: location.protocol === 'https:',
-      config: {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-      },
-    };
   }
 
   function setJoinMessage(text, isError = false) {
@@ -150,8 +121,7 @@
   }
 
   function wrapUserMediaError(e) {
-    const msg = userMediaErrorMessage(e);
-    const wrapped = new Error(msg);
+    const wrapped = new Error(userMediaErrorMessage(e));
     wrapped.cause = e;
     return wrapped;
   }
@@ -172,10 +142,7 @@
 
   function waitForSocketConnect() {
     return new Promise((resolve) => {
-      if (socket.connected) {
-        resolve();
-        return;
-      }
+      if (socket.connected) return resolve();
       socket.once('connect', resolve);
     });
   }
@@ -191,64 +158,65 @@
     clearStreamWatchdog();
     streamWatchdogTimer = setTimeout(() => {
       streamWatchdogTimer = null;
-      const hasRemote = remoteVideo.srcObject && remoteVideo.srcObject.getTracks().some((t) => t.readyState === 'live');
+      const hasRemote =
+        remoteVideo.srcObject && remoteVideo.srcObject.getTracks().some((t) => t.readyState === 'live');
       if (hasRemote) return;
       console.warn('[call] no remote media within timeout');
-      hangupMedia();
-      try {
-        if (activeCall) activeCall.close();
-      } catch (e) {
-        /* ignore */
-      }
-      activeCall = null;
       scheduleLobbyReset('Could not connect in time. Tap Join to retry.', true);
     }, 35000);
   }
 
+  function clearRemote() {
+    remoteVideo.srcObject = null;
+  }
+
+  function closePeerConnection() {
+    if (!peerConnection) return;
+    try {
+      peerConnection.ontrack = null;
+      peerConnection.onicecandidate = null;
+      peerConnection.onconnectionstatechange = null;
+      peerConnection.close();
+    } catch (e) {
+      /* ignore */
+    }
+    peerConnection = null;
+  }
+
+  function hangupMedia() {
+    clearStreamWatchdog();
+    closePeerConnection();
+    if (Island) Island.detachPeerConnection();
+    clearRemote();
+  }
+
   function emitLeaveRoomIfJoined() {
     if (!inServerRoom) return;
-    if (socket.connected) {
-      socket.emit('leave-room');
-    }
+    if (socket.connected) socket.emit('leave-room');
     inServerRoom = false;
     pendingRoomId = null;
   }
 
-  /**
-   * Return to lobby without full page reload: leave server room, tear down PeerJS call, optional media.
-   */
   function softReturnToLobby(opts) {
     opts = opts || {};
     clearStreamWatchdog();
     lobbyResetScheduled = false;
     hangupMedia();
     emitLeaveRoomIfJoined();
-    if (peer) {
-      try {
-        peer.destroy();
-      } catch (e) {
-        /* ignore */
-      }
-      peer = null;
-    }
-    didRegisterPeerjs = false;
     pendingMediaNotice = '';
-    if (!opts.keepMedia) {
-      if (localStream) {
-        for (const t of localStream.getTracks()) {
-          t.stop();
-        }
-        localStream = null;
-        localVideo.srcObject = null;
-      }
+
+    if (!opts.keepMedia && localStream) {
+      for (const t of localStream.getTracks()) t.stop();
+      localStream = null;
+      localVideo.srcObject = null;
     }
+
     joinPanel.classList.remove('hidden');
     callPanel.classList.add('hidden');
     document.body.classList.remove('on-call');
     if (Island) Island.hide();
     setJoinMessage(opts.joinMessage != null ? opts.joinMessage : 'Tap Join to try again.', !!opts.isError);
-    if (opts.callMessage != null) setCallMessage(opts.callMessage);
-    else setCallMessage('');
+    setCallMessage(opts.callMessage != null ? opts.callMessage : '');
     joinBtn.disabled = false;
   }
 
@@ -269,22 +237,11 @@
     clearStreamWatchdog();
     hangupMedia();
     emitLeaveRoomIfJoined();
-    if (peer) {
-      try {
-        peer.destroy();
-      } catch (e) {
-        /* ignore */
-      }
-      peer = null;
-    }
     if (localStream) {
-      for (const t of localStream.getTracks()) {
-        t.stop();
-      }
+      for (const t of localStream.getTracks()) t.stop();
       localStream = null;
       localVideo.srcObject = null;
     }
-    didRegisterPeerjs = false;
     pendingMediaNotice = '';
     inServerRoom = false;
     pendingRoomId = null;
@@ -315,26 +272,16 @@
 
   async function acquireMediaOnce() {
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     } catch (e) {
       if (isDeviceBusyError(e)) {
         try {
-          localStream = await navigator.mediaDevices.getUserMedia({
-            video: false,
-            audio: true,
-          });
+          localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
           pendingMediaNotice = 'Camera already in use by another tab. Reusing stream.';
         } catch (eAudio) {
           try {
-            localStream = await navigator.mediaDevices.getUserMedia({
-              video: true,
-              audio: false,
-            });
-            pendingMediaNotice =
-              'Microphone may be in use in another tab. Reusing stream (video only).';
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            pendingMediaNotice = 'Microphone may be in use in another tab. Reusing stream (video only).';
           } catch (eVideo) {
             throw wrapUserMediaError(eVideo);
           }
@@ -345,7 +292,7 @@
     }
 
     localVideo.srcObject = localStream;
-    console.log('[call] local stream started');
+    console.log('local stream started');
     try {
       await localVideo.play();
     } catch (playErr) {
@@ -357,9 +304,7 @@
 
   async function ensureLocalStream() {
     if (hasLiveLocalStream()) {
-      if (localVideo.srcObject !== localStream) {
-        localVideo.srcObject = localStream;
-      }
+      if (localVideo.srcObject !== localStream) localVideo.srcObject = localStream;
       try {
         await localVideo.play();
       } catch (playErr) {
@@ -368,14 +313,11 @@
       return localStream;
     }
 
-    if (mediaAcquirePromise) {
-      return mediaAcquirePromise;
+    if (!mediaAcquirePromise) {
+      mediaAcquirePromise = acquireMediaOnce().finally(() => {
+        mediaAcquirePromise = null;
+      });
     }
-
-    mediaAcquirePromise = acquireMediaOnce().finally(() => {
-      mediaAcquirePromise = null;
-    });
-
     return mediaAcquirePromise;
   }
 
@@ -388,91 +330,27 @@
     }
   }
 
-  function clearRemote() {
-    remoteVideo.srcObject = null;
-  }
+  function createPeerConnection() {
+    if (peerConnection) return peerConnection;
 
-  function hangupMedia() {
-    clearStreamWatchdog();
-    if (Island) Island.detachPeerConnection();
-    if (activeCall) {
-      try {
-        activeCall.close();
-      } catch (e) {
-        /* ignore */
-      }
-      activeCall = null;
-    }
-    clearRemote();
-  }
-
-  function bindPeerConnectionRecovery(call) {
-    const pc = call && call.peerConnection;
-    if (!pc) return;
-
-    const onState = () => {
-      const s = pc.connectionState;
-      if (s === 'failed' || s === 'closed') {
-        pc.removeEventListener('connectionstatechange', onState);
-        console.warn('[call] RTCPeerConnection', s);
-        scheduleLobbyReset('Call disconnected. Tap Join to retry.', true);
-      }
-    };
-    const onSignaling = () => {
-      const ld = pc.localDescription;
-      const rd = pc.remoteDescription;
-      if (ld && ld.type === 'offer') console.log('[call] offer sent');
-      if (rd && rd.type === 'offer') console.log('[call] offer received');
-      if (ld && ld.type === 'answer') console.log('[call] answer sent');
-      if (rd && rd.type === 'answer') console.log('[call] answer received');
-    };
-    const onIceCandidate = (ev) => {
-      if (ev && ev.candidate) {
-        console.log('[call] ICE candidate generated');
-      }
-    };
-    const onTrack = (event) => {
-      const remoteStream = event && event.streams && event.streams[0];
-      if (!remoteStream) return;
-      console.log('[call] remote stream received');
-      clearStreamWatchdog();
-      remoteVideo.srcObject = remoteStream;
-      tryPlayRemote();
-    };
-    pc.addEventListener('connectionstatechange', onState);
-    pc.addEventListener('signalingstatechange', onSignaling);
-    pc.addEventListener('icecandidate', onIceCandidate);
-    pc.addEventListener('track', onTrack);
-    call.once('close', () => {
-      pc.removeEventListener('connectionstatechange', onState);
-      pc.removeEventListener('signalingstatechange', onSignaling);
-      pc.removeEventListener('icecandidate', onIceCandidate);
-      pc.removeEventListener('track', onTrack);
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
-  }
+    peerConnection = pc;
+    console.log('peer created');
 
-  function emitPeerjsRegister() {
-    if (!peer || !peer.id) {
-      return;
-    }
-    if (didRegisterPeerjs) {
-      return;
-    }
-    didRegisterPeerjs = true;
-    socket.emit('peerjs-register', { peerjsId: peer.id });
-  }
+    localStream.getTracks().forEach((track) => {
+      pc.addTrack(track, localStream);
+      console.log('track added to peer connection', track.kind);
+    });
 
-  function wireMediaConnection(call) {
-    hangupMedia();
-    activeCall = call;
-
-    if (Island) Island.attachMediaConnection(call);
-    bindPeerConnectionRecovery(call);
-
-    call.on('stream', (remoteStream) => {
-      console.log('[call] remote stream received');
+    pc.ontrack = (event) => {
+      const stream = event.streams && event.streams[0];
+      if (!stream) return;
+      console.log('track received');
+      console.log('remote stream received');
       clearStreamWatchdog();
-      remoteVideo.srcObject = remoteStream;
+      remoteVideo.srcObject = stream;
       tryPlayRemote();
       setCallMessage('In call');
       if (Island) {
@@ -480,108 +358,88 @@
         const a = localStream && localStream.getAudioTracks()[0];
         Island.setMicMuted(a ? !a.enabled : false);
       }
-    });
+    };
 
-    call.on('close', () => {
-      if (Island) Island.detachPeerConnection();
-      if (activeCall === call) {
-        activeCall = null;
+    pc.onicecandidate = (event) => {
+      if (!event.candidate || !inServerRoom) return;
+      console.log('ice sent');
+      socket.emit('ice-candidate', { candidate: event.candidate });
+    };
+
+    pc.onconnectionstatechange = () => {
+      const s = pc.connectionState;
+      if (s === 'failed' || s === 'closed') {
+        console.warn('[call] RTCPeerConnection', s);
+        scheduleLobbyReset('Call disconnected. Tap Join to retry.', true);
       }
-      clearRemote();
-    });
+    };
 
-    call.on('error', (err) => {
-      console.warn('[call] MediaConnection error', err && err.message);
-      setCallMessage('Call error — tap Join to retry.');
-      if (Island) Island.setIssue('Call interrupted');
-      scheduleLobbyReset('Call error. Tap Join to retry.', true);
-    });
+    if (Island) Island.attachMediaConnection({ peerConnection: pc });
+    return pc;
   }
 
-  function onIncomingCall(call) {
-    if (!hasLiveLocalStream()) {
-      try {
-        call.close();
-      } catch (e) {
-        /* ignore */
-      }
-      return;
+  async function startCallerFlow() {
+    if (!hasLiveLocalStream() || !inServerRoom) return;
+    try {
+      if (Island) Island.setRinging();
+      const pc = createPeerConnection();
+      const offer = await pc.createOffer();
+      console.log('offer created');
+      await pc.setLocalDescription(offer);
+      socket.emit('offer', { offer: pc.localDescription });
+      console.log('offer sent');
+      setCallMessage('Ringing…');
+      armStreamWatchdog();
+    } catch (e) {
+      console.warn('[call] startCallerFlow failed', e && e.message);
+      scheduleLobbyReset('Could not start call. Tap Join to retry.', true);
     }
-    if (Island) Island.setConnecting('Connecting…');
-    wireMediaConnection(call);
-    armStreamWatchdog();
-    console.log('[call] offer received');
-    if (localStream) {
-      localStream.getTracks().forEach((track) => {
-        console.log('[call] track added to peer connection', track.kind);
-      });
-    }
-    console.log('[call] answer sent');
-    call.answer(localStream);
-    setCallMessage('Connecting…');
   }
 
-  function createPeerAwaitOpen() {
-    return new Promise((resolve, reject) => {
-      if (typeof Peer === 'undefined') {
-        reject(new Error('PeerJS failed to load'));
-        return;
-      }
+  async function onOffer(payload) {
+    try {
+      if (!inServerRoom || !hasLiveLocalStream()) return;
+      const offer = payload && payload.offer;
+      if (!offer) return;
+      console.log('offer received');
+      if (Island) Island.setConnecting('Connecting…');
 
-      if (peer) {
-        try {
-          peer.destroy();
-        } catch (e) {
-          /* ignore */
-        }
-        peer = null;
-      }
-      didRegisterPeerjs = false;
+      const pc = createPeerConnection();
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      console.log('answer created');
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { answer: pc.localDescription });
+      console.log('answer sent');
+      setCallMessage('Connecting…');
+      armStreamWatchdog();
+    } catch (e) {
+      console.warn('[call] onOffer failed', e && e.message);
+      scheduleLobbyReset('Could not answer call. Tap Join to retry.', true);
+    }
+  }
 
-      const p = new Peer(undefined, peerOptions());
-      peer = p;
+  async function onAnswer(payload) {
+    try {
+      const answer = payload && payload.answer;
+      if (!answer || !peerConnection) return;
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log('answer received');
+    } catch (e) {
+      console.warn('[call] onAnswer failed', e && e.message);
+      scheduleLobbyReset('Call setup failed. Tap Join to retry.', true);
+    }
+  }
 
-      p.on('call', (call) => {
-        onIncomingCall(call);
-      });
-
-      p.on('disconnected', () => {
-        if (peer !== p) return;
-        console.warn('[call] PeerJS disconnected from signaling server');
-        try {
-          if (typeof p.reconnect === 'function') {
-            p.reconnect();
-          }
-        } catch (e) {
-          console.warn('[call] peer.reconnect failed', e && e.message);
-        }
-      });
-
-      let opened = false;
-      p.on('error', (err) => {
-        console.warn('[call] Peer error', err && err.message);
-        setCallMessage('Peer error: ' + (err && err.message ? err.message : 'unknown'));
-        if (!opened && Island) {
-          Island.setIssue(err && err.message ? err.message : 'Peer error');
-        }
-        if (!opened) {
-          opened = true;
-          try {
-            p.destroy();
-          } catch (e) {
-            /* ignore */
-          }
-          peer = null;
-          reject(err);
-        }
-      });
-
-      p.on('open', () => {
-        if (opened) return;
-        opened = true;
-        resolve(p);
-      });
-    });
+  async function onIceCandidate(payload) {
+    try {
+      const candidate = payload && payload.candidate;
+      if (!candidate || !peerConnection) return;
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      console.log('ice received');
+    } catch (e) {
+      console.warn('[call] addIceCandidate failed', e && e.message);
+    }
   }
 
   socket.on('join-error', (msg) => {
@@ -595,31 +453,21 @@
     setJoinMessage('');
     enterCallView();
     joinBtn.disabled = false;
-    try {
-      if (Island) Island.setConnecting('Connecting…');
-      emitPeerjsRegister();
-      if (Island) Island.setWaiting();
-      const extra = pendingMediaNotice ? `${pendingMediaNotice} ` : '';
-      pendingMediaNotice = '';
-      setCallMessage(extra + 'Waiting for someone to join this room…');
-    } catch (e) {
-      console.warn('[call] waiting handler', e && e.message);
-    }
+    if (Island) Island.setWaiting();
+    const extra = pendingMediaNotice ? `${pendingMediaNotice} ` : '';
+    pendingMediaNotice = '';
+    setCallMessage(extra + 'Waiting for someone to join this room…');
   });
 
-  socket.on('peer-present', () => {
+  socket.on('peer-present', async () => {
     inServerRoom = true;
     enterCallView();
     joinBtn.disabled = false;
-    try {
-      if (Island) Island.setConnecting('Connecting…');
-      emitPeerjsRegister();
-      const extra = pendingMediaNotice ? `${pendingMediaNotice} ` : '';
-      pendingMediaNotice = '';
-      setCallMessage(extra + 'Connecting…');
-    } catch (e) {
-      console.warn('[call] peer-present handler', e && e.message);
-    }
+    if (Island) Island.setConnecting('Connecting…');
+    const extra = pendingMediaNotice ? `${pendingMediaNotice} ` : '';
+    pendingMediaNotice = '';
+    setCallMessage(extra + 'Connecting…');
+    await startCallerFlow();
   });
 
   socket.on('peer-joined', () => {
@@ -627,32 +475,9 @@
     setCallMessage('Someone joined — connecting…');
   });
 
-  socket.on('you-call', ({ partnerPeerId }) => {
-    const id = partnerPeerId && String(partnerPeerId);
-    if (!id || !peer || !hasLiveLocalStream()) {
-      console.warn('[call] you-call ignored — missing peer, stream, or partner id');
-      return;
-    }
-
-    try {
-      if (Island) Island.setRinging();
-      if (localStream) {
-        localStream.getTracks().forEach((track) => {
-          console.log('[call] track added to peer connection', track.kind);
-        });
-      }
-      console.log('[call] offer sent');
-      const call = peer.call(id, localStream);
-      wireMediaConnection(call);
-      armStreamWatchdog();
-      setCallMessage('Ringing…');
-    } catch (e) {
-      console.warn('[call] peer.call failed', e && e.message);
-      setCallMessage('Could not place call: ' + (e && e.message ? e.message : 'error'));
-      if (Island) Island.setIssue('Could not place call');
-      scheduleLobbyReset('Could not start call. Tap Join to retry.', true);
-    }
-  });
+  socket.on('offer', onOffer);
+  socket.on('answer', onAnswer);
+  socket.on('ice-candidate', onIceCandidate);
 
   socket.on('peer-left', () => {
     hangupMedia();
@@ -661,29 +486,19 @@
   });
 
   socket.on('disconnect', (reason) => {
-    if (!callPanel.classList.contains('hidden')) {
-      console.warn('[call] socket disconnected', reason);
-      hangupMedia();
-      if (peer) {
-        try {
-          peer.destroy();
-        } catch (e) {
-          /* ignore */
-        }
-        peer = null;
-      }
-      didRegisterPeerjs = false;
-      inServerRoom = false;
-      pendingRoomId = null;
-      clearStreamWatchdog();
-      joinPanel.classList.remove('hidden');
-      callPanel.classList.add('hidden');
-      document.body.classList.remove('on-call');
-      if (Island) Island.hide();
-      setJoinMessage('Disconnected. Tap Join when the connection is back.', true);
-      setCallMessage('');
-      joinBtn.disabled = false;
-    }
+    if (callPanel.classList.contains('hidden')) return;
+    console.warn('[call] socket disconnected', reason);
+    hangupMedia();
+    inServerRoom = false;
+    pendingRoomId = null;
+    clearStreamWatchdog();
+    joinPanel.classList.remove('hidden');
+    callPanel.classList.add('hidden');
+    document.body.classList.remove('on-call');
+    if (Island) Island.hide();
+    setJoinMessage('Disconnected. Tap Join when the connection is back.', true);
+    setCallMessage('');
+    joinBtn.disabled = false;
   });
 
   joinBtn.addEventListener('click', async () => {
@@ -699,7 +514,6 @@
     try {
       await waitForSocketConnect();
       await ensureLocalStream();
-      await createPeerAwaitOpen();
       pendingRoomId = roomId;
       setJoinMessage('Joining room…');
       socket.emit('join-room', roomId);
@@ -729,9 +543,7 @@
   cameraBtn.addEventListener('click', () => {
     if (!localStream) return;
     const video = localStream.getVideoTracks()[0];
-    if (!video) {
-      return;
-    }
+    if (!video) return;
     video.enabled = !video.enabled;
     const off = !video.enabled;
     cameraBtn.setAttribute('aria-pressed', off ? 'true' : 'false');
@@ -743,22 +555,11 @@
     clearStreamWatchdog();
     hangupMedia();
     emitLeaveRoomIfJoined();
-    if (peer) {
-      try {
-        peer.destroy();
-      } catch (e) {
-        /* ignore */
-      }
-      peer = null;
-    }
     if (localStream) {
-      for (const t of localStream.getTracks()) {
-        t.stop();
-      }
+      for (const t of localStream.getTracks()) t.stop();
       localStream = null;
       localVideo.srcObject = null;
     }
-    didRegisterPeerjs = false;
     pendingMediaNotice = '';
     inServerRoom = false;
     pendingRoomId = null;
@@ -772,6 +573,5 @@
     location.reload();
   });
 
-  /** Exposed for optional admin / dev tools (Socket.IO); not used by call logic. */
   window.__VIDEO_CALL_SOCKET__ = socket;
 })();

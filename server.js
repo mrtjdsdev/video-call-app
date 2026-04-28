@@ -2,17 +2,9 @@ const http = require('http');
 const path = require('path');
 const express = require('express');
 const { Server } = require('socket.io');
-const { ExpressPeerServer } = require('peer');
 
 const app = express();
 const server = http.createServer(app);
-
-/** PeerJS signaling (WebRTC offer/answer/ICE handled by PeerServer + library) */
-const peerServer = ExpressPeerServer(server, {
-  path: '/',
-  debug: false,
-});
-app.use('/peerjs', peerServer);
 
 const io = new Server(server, {
   cors: { origin: true },
@@ -22,18 +14,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /** roomId -> [socketId, ...] max 2, join order */
 const rooms = new Map();
-/** socket.id -> PeerJS id (after client registers) */
-const peerjsBySocket = new Map();
-/** roomId: we already told the second socket to peer.call() this pair */
-const roomCallStarted = new Set();
-
 function removeSocketFromAllRooms(socketId) {
   for (const [roomId, ids] of rooms.entries()) {
     const idx = ids.indexOf(socketId);
     if (idx === -1) continue;
     ids.splice(idx, 1);
-    peerjsBySocket.delete(socketId);
-    roomCallStarted.delete(roomId);
     const remaining = ids[0];
     if (remaining) {
       io.to(remaining).emit('peer-left');
@@ -42,20 +27,6 @@ function removeSocketFromAllRooms(socketId) {
       rooms.delete(roomId);
     }
   }
-}
-
-function tryStartPeerCall(roomId) {
-  const ids = rooms.get(roomId);
-  if (!ids || ids.length < 2) return;
-  const firstSocket = ids[0];
-  const secondSocket = ids[1];
-  const firstPeerjs = peerjsBySocket.get(firstSocket);
-  const secondPeerjs = peerjsBySocket.get(secondSocket);
-  if (!firstPeerjs || !secondPeerjs) return;
-  if (roomCallStarted.has(roomId)) return;
-  roomCallStarted.add(roomId);
-  /** Second joiner places the media call; first answers in PeerJS. */
-  io.to(secondSocket).emit('you-call', { partnerPeerId: firstPeerjs });
 }
 
 io.on('connection', (socket) => {
@@ -92,14 +63,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('peerjs-register', (data) => {
-    const peerjsId = data && data.peerjsId;
-    const roomId = socket.roomId;
-    if (!peerjsId || !roomId) return;
-    peerjsBySocket.set(socket.id, String(peerjsId));
-    tryStartPeerCall(roomId);
-  });
-
   /** Client leaves the matchmaking room without disconnecting the socket (retry / soft reset). */
   socket.on('leave-room', () => {
     const roomId = socket.roomId;
@@ -108,6 +71,26 @@ io.on('connection', (socket) => {
     }
     removeSocketFromAllRooms(socket.id);
     socket.roomId = undefined;
+  });
+
+  function relayToRoomPeer(eventName, payload) {
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const ids = rooms.get(roomId);
+    if (!ids || ids.length < 2) return;
+    socket.to(roomId).emit(eventName, payload);
+  }
+
+  socket.on('offer', (payload) => {
+    relayToRoomPeer('offer', payload);
+  });
+
+  socket.on('answer', (payload) => {
+    relayToRoomPeer('answer', payload);
+  });
+
+  socket.on('ice-candidate', (payload) => {
+    relayToRoomPeer('ice-candidate', payload);
   });
 
   const ADMIN_EFFECTS = new Set([
